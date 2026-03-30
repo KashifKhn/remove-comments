@@ -1,19 +1,18 @@
 local ts = vim.treesitter
-local parsers = require("nvim-treesitter.parsers")
 local config = require("nvim-remove-comments.config")
 
 local M = {}
 
 function M.remove_comments()
 	local bufnr = vim.api.nvim_get_current_buf()
-	local lang = parsers.get_buf_lang(bufnr)
+	local lang = vim.bo[bufnr].filetype
 
-	if not parsers.has_parser(lang) then
+	if lang == "" then
 		return
 	end
 
-	local parser = parsers.get_parser(bufnr, lang)
-	if not parser then
+	local ok, parser = pcall(ts.get_parser, bufnr, lang)
+	if not ok or not parser then
 		return
 	end
 
@@ -25,6 +24,11 @@ function M.remove_comments()
 
 	for _, node in query:iter_captures(root, bufnr, 0, -1) do
 		local srow, scol, erow, ecol = node:range()
+
+		if srow == 0 and vim.startswith(vim.fn.getline(1), "#!") then
+			goto continue
+		end
+
 		local lines = vim.api.nvim_buf_get_lines(bufnr, srow, erow + 1, false)
 
 		if srow == erow then
@@ -42,6 +46,8 @@ function M.remove_comments()
 				lines_to_delete[i] = true
 			end
 		end
+
+		::continue::
 	end
 
 	local rows = {}
