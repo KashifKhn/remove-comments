@@ -3,9 +3,12 @@ package walker
 import (
 	"os"
 	"path/filepath"
+	"strings"
+
+	"github.com/bmatcuk/doublestar/v4"
+	"github.com/boyter/gocodewalker"
 
 	"github.com/KashifKhn/remove-comments/cli/internal/languages"
-	"github.com/boyter/gocodewalker"
 )
 
 type FileEntry struct {
@@ -14,18 +17,30 @@ type FileEntry struct {
 	Lang languages.LangConfig
 }
 
-func Walk(root string, langFilter string, maxFileSize int64, excludePatterns []string) ([]FileEntry, []error) {
+type Options struct {
+	Langs       []string
+	MaxFileSize int64
+	Exclude     []string
+	Include     []string
+}
+
+func (o Options) Filter() *languages.LangFilter {
+	return languages.NewLangFilter(o.Langs)
+}
+
+func Walk(root string, opts Options) ([]FileEntry, []error) {
 	info, err := os.Stat(root)
 	if err != nil {
 		return nil, []error{err}
 	}
 	if !info.IsDir() {
-		return walkSingleFile(root, langFilter, maxFileSize, excludePatterns)
+		return walkSingleFile(root, opts)
 	}
 
 	queue := make(chan *gocodewalker.File, 512)
 
-	exts := buildAllowList(langFilter)
+	filter := opts.Filter()
+	exts := buildAllowList(filter)
 
 	fw := gocodewalker.NewFileWalker(root, queue)
 	fw.AllowListExtensions = exts
@@ -45,7 +60,11 @@ func Walk(root string, langFilter string, maxFileSize int64, excludePatterns []s
 	var errs []error
 
 	for f := range queue {
-		if matchesAny(f.Location, excludePatterns) {
+		rel := relPath(root, f.Location)
+		if opts.excluded(f.Location, rel) {
+			continue
+		}
+		if !opts.included(f.Location, rel) {
 			continue
 		}
 
@@ -54,7 +73,7 @@ func Walk(root string, langFilter string, maxFileSize int64, excludePatterns []s
 		if !ok {
 			continue
 		}
-		if langFilter != "" && cfg.Name != langFilter {
+		if !filter.Allowed(cfg.Name) {
 			continue
 		}
 
@@ -63,7 +82,7 @@ func Walk(root string, langFilter string, maxFileSize int64, excludePatterns []s
 			errs = append(errs, statErr)
 			continue
 		}
-		if maxFileSize > 0 && fi.Size() > maxFileSize {
+		if opts.MaxFileSize > 0 && fi.Size() > opts.MaxFileSize {
 			continue
 		}
 
@@ -81,8 +100,11 @@ func Walk(root string, langFilter string, maxFileSize int64, excludePatterns []s
 	return entries, errs
 }
 
-func walkSingleFile(path string, langFilter string, maxFileSize int64, excludePatterns []string) ([]FileEntry, []error) {
-	if matchesAny(path, excludePatterns) {
+func walkSingleFile(path string, opts Options) ([]FileEntry, []error) {
+	if opts.excluded(path, "") {
+		return nil, nil
+	}
+	if !opts.included(path, "") {
 		return nil, nil
 	}
 	ext := filepath.Ext(path)
@@ -90,93 +112,69 @@ func walkSingleFile(path string, langFilter string, maxFileSize int64, excludePa
 	if !ok {
 		return nil, nil
 	}
-	if langFilter != "" && cfg.Name != langFilter {
+	if !opts.Filter().Allowed(cfg.Name) {
 		return nil, nil
 	}
 	fi, err := os.Stat(path)
 	if err != nil {
 		return nil, []error{err}
 	}
-	if maxFileSize > 0 && fi.Size() > maxFileSize {
+	if opts.MaxFileSize > 0 && fi.Size() > opts.MaxFileSize {
 		return nil, nil
 	}
 	return []FileEntry{{Path: path, Ext: ext, Lang: cfg}}, nil
 }
 
-func matchesAny(path string, patterns []string) bool {
+func (o Options) excluded(path, rel string) bool {
+	return matchAny(o.Exclude, path, rel)
+}
+
+func (o Options) included(path, rel string) bool {
+	if len(o.Include) == 0 {
+		return true
+	}
+	return matchAny(o.Include, path, rel)
+}
+
+func relPath(root, path string) string {
+	rel, err := filepath.Rel(root, path)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return path
+	}
+	return rel
+}
+
+func matchAny(patterns []string, path, rel string) bool {
 	if len(patterns) == 0 {
 		return false
 	}
-	base := filepath.Base(path)
 	normalized := filepath.ToSlash(path)
+	base := filepath.Base(path)
+	relNorm := filepath.ToSlash(rel)
 	for _, pattern := range patterns {
 		p := filepath.ToSlash(pattern)
-		if matched, _ := filepath.Match(p, base); matched {
-			return true
+		if p == "" {
+			continue
 		}
-		if matched, _ := filepath.Match(p, normalized); matched {
-			return true
-		}
-		if matchDoubleGlob(normalized, p) {
-			return true
-		}
-	}
-	return false
-}
-
-func matchDoubleGlob(path, pattern string) bool {
-	if len(pattern) < 3 {
-		return false
-	}
-	idx := 0
-	for idx <= len(pattern)-2 {
-		if pattern[idx] == '*' && pattern[idx+1] == '*' {
-			prefix := pattern[:idx]
-			suffix := pattern[idx+2:]
-			if len(suffix) > 0 && suffix[0] == '/' {
-				suffix = suffix[1:]
-			}
-			if prefix != "" {
-				if matched, _ := filepath.Match(prefix+"*", path[:min(len(path), len(prefix)+1)]); !matched {
-					if !startsWith(filepath.ToSlash(path), filepath.ToSlash(prefix)) {
-						return false
-					}
-				}
-			}
-			if suffix == "" {
+		if strings.Contains(p, "/") {
+			if ok, _ := doublestar.Match(p, normalized); ok {
 				return true
 			}
-			matched, _ := filepath.Match(suffix, filepath.Base(path))
-			return matched
+			if relNorm != "" && relNorm != normalized {
+				if ok, _ := doublestar.Match(p, relNorm); ok {
+					return true
+				}
+			}
 		}
-		idx++
+		if ok, _ := doublestar.Match(p, base); ok {
+			return true
+		}
 	}
 	return false
 }
 
-func startsWith(s, prefix string) bool {
-	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func buildAllowList(langFilter string) []string {
-	var source []string
-	if langFilter == "" {
-		source = languages.Supported()
-	} else {
-		for _, ext := range languages.Supported() {
-			cfg, ok := languages.Get(ext)
-			if ok && cfg.Name == langFilter {
-				source = append(source, ext)
-			}
-		}
-	}
+func buildAllowList(filter *languages.LangFilter) []string {
+	source := languages.ExtensionsFor(filter.Names())
 	exts := make([]string, 0, len(source))
 	for _, ext := range source {
 		if len(ext) > 1 && ext[0] == '.' {

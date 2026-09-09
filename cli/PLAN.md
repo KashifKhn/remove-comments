@@ -74,11 +74,29 @@ Contains the top-level `run()` function that orchestrates the pipeline.
 A static lookup table: file extension → `LangConfig{ Name, Query }`.
 This mirrors `lua/nvim-remove-comments/config.lua` exactly.
 Any new language added here must also be added to the Lua config, and vice versa.
+Also provides `Names()` (all language names, sorted), `ValidName`, `ExtensionsFor`,
+and `LangFilter` for multi-language filtering with validation.
+
+**`internal/generated/generated.go`**
+Generated-file detection. Two strategies:
+filename patterns (`*.g.dart`, `*.pb.go`, `*_pb2.py`, `*.gen.ts`, `*.min.js`, ...)
+and content markers (`code generated` / `do not edit` in the first 512 bytes).
+Disabled with `--no-skip-generated`.
+
+**`internal/config/config.go`**
+Loads `.remove-comments.yaml` (discovered by searching upward from the target
+path, or passed explicitly via `--config`). Fields: `exclude`, `include`,
+`langs`, `skip-generated`, `max-file-size`. CLI flags override config values.
 
 **`internal/walker/walker.go`**
-Accepts a root path. Uses `gocodewalker` to walk the directory tree, respecting all
-`.gitignore` files found at each level. Filters results to only files whose extension
-is in the `languages` table. Returns a slice of `FileEntry`.
+Accepts a root path and an `Options` struct (`Langs`, `MaxFileSize`,
+`Exclude`, `Include`). Uses `gocodewalker` to walk the directory tree,
+respecting all `.gitignore` files found at each level. Filters results to
+only files whose extension is in the `languages` table, whose language passes
+the `Langs` filter (empty = all), matching at least one `Include` glob (when
+set), and not matching any `Exclude` glob. Glob matching uses `doublestar`
+(supports `**`) against basename, full path, and path relative to the walk
+root. Returns a slice of `FileEntry`.
 
 **`internal/parser/parser.go`**
 Accepts a `FileEntry` and the raw file bytes. Initializes the correct Tree-sitter
@@ -268,7 +286,12 @@ remove-comments [path] [flags]
 |---|---|---|---|
 | `--write` | `-w` | `false` | Write changes to disk. Without this flag, the tool only previews. |
 | `--quiet` | `-q` | `false` | Suppress per-file diff output. Print only the final summary line. |
-| `--lang` | | `""` | Process only files of the specified language (e.g., `--lang go`). |
+| `--lang` | | `""` | Process only files of the specified languages, comma-separated (e.g., `--lang go,java`). |
+| `--include` | | | Glob patterns; when set, only matching files are processed (e.g., `src/**`). |
+| `--no-skip-generated` | | `false` | Do not skip generated files. |
+| `--config` | | | Path to a config file (default: search for `.remove-comments.yaml`). |
+| `--no-config` | | `false` | Do not load a config file. |
+| `--list-langs` | | `false` | List supported languages and exit. |
 | `--jobs` | `-j` | `NumCPU` | Number of parallel workers. |
 | `--max-file-size` | | `10485760` | Skip files larger than this byte size (default 10 MB). |
 | `--version` | `-v` | | Print version string and exit. |
@@ -428,8 +451,10 @@ No external test frameworks.
 
 ## Out of Scope for v1
 
-- Config file support (`.removecommentsrc`)
-- `--ignore` flag for additional ignore patterns beyond `.gitignore`
+- ~~Config file support (`.removecommentsrc`)~~ — done: `.remove-comments.yaml`
+- ~~`--ignore` flag for additional ignore patterns beyond `.gitignore`~~ — done: `--exclude`
+- ~~Selective processing~~ — done: `--include`, multi-lang `--lang`
+- ~~Generated-file skipping~~ — done: `internal/generated`
 - Preserving specific comment patterns (license headers, `TODO`, `FIXME`)
 - `--stdin` / `--stdout` single-file pipe mode
 - Shell completion (`cobra` has this built-in, can be added trivially later)

@@ -1,6 +1,10 @@
 package languages
 
 import (
+	"fmt"
+	"sort"
+	"strings"
+
 	"github.com/KashifKhn/remove-comments/cli/internal/dart"
 	sitter "github.com/smacker/go-tree-sitter"
 	"github.com/smacker/go-tree-sitter/bash"
@@ -170,4 +174,87 @@ func Supported() []string {
 		exts = append(exts, ext)
 	}
 	return exts
+}
+
+func Names() []string {
+	seen := map[string]bool{}
+	names := make([]string, 0, len(byExtension))
+	for _, cfg := range byExtension {
+		if !seen[cfg.Name] {
+			seen[cfg.Name] = true
+			names = append(names, cfg.Name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+func ValidName(name string) bool {
+	for _, cfg := range byExtension {
+		if cfg.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func ExtensionsFor(names []string) []string {
+	if len(names) == 0 {
+		return Supported()
+	}
+	set := map[string]bool{}
+	for _, n := range names {
+		for ext, cfg := range byExtension {
+			if cfg.Name == n {
+				set[ext] = true
+			}
+		}
+	}
+	exts := make([]string, 0, len(set))
+	for ext := range set {
+		exts = append(exts, ext)
+	}
+	return exts
+}
+
+type LangFilter struct {
+	names map[string]bool
+}
+
+func NewLangFilter(langs []string) *LangFilter {
+	if len(langs) == 0 {
+		return &LangFilter{}
+	}
+	names := map[string]bool{}
+	for _, l := range langs {
+		names[strings.ToLower(strings.TrimSpace(l))] = true
+	}
+	return &LangFilter{names: names}
+}
+
+func (f *LangFilter) Names() []string {
+	if len(f.names) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(f.names))
+	for n := range f.names {
+		out = append(out, n)
+	}
+	return out
+}
+
+func (f *LangFilter) Allowed(name string) bool {
+	if len(f.names) == 0 {
+		return true
+	}
+	return f.names[name]
+}
+
+func (f *LangFilter) Validate() error {
+	for name := range f.names {
+		if !ValidName(name) {
+			return fmt.Errorf("unknown language %q (see --list-langs)", name)
+		}
+	}
+	return nil
 }

@@ -38,7 +38,7 @@ func TestWalk_ReturnsOnlySupportedExtensions(t *testing.T) {
 		}
 	}
 
-	entries, errs := Walk(dir, "", 0, nil)
+	entries, errs := Walk(dir, Options{})
 	if len(errs) > 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
@@ -84,7 +84,7 @@ func TestWalk_RespectsGitignore(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	entries, errs := Walk(dir, "", 0, nil)
+	entries, errs := Walk(dir, Options{})
 	if len(errs) > 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
@@ -120,7 +120,7 @@ func TestWalk_LangFilter(t *testing.T) {
 		}
 	}
 
-	entries, errs := Walk(dir, "go", 0, nil)
+	entries, errs := Walk(dir, Options{Langs: []string{"go"}})
 	if len(errs) > 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
@@ -132,6 +132,123 @@ func TestWalk_LangFilter(t *testing.T) {
 	}
 	if len(entries) == 0 {
 		t.Error("expected at least one go file")
+	}
+}
+
+func TestWalk_MultiLangFilter(t *testing.T) {
+	dir := t.TempDir()
+
+	files := []string{"main.go", "script.py", "app.ts", "Main.java", "main.dart"}
+	for _, f := range files {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	entries, errs := Walk(dir, Options{Langs: []string{"go", "java"}})
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	for _, e := range entries {
+		if e.Lang.Name != "go" && e.Lang.Name != "java" {
+			t.Errorf("multi-lang filter should not return file: %s (lang=%s)", e.Path, e.Lang.Name)
+		}
+	}
+	if len(entries) != 2 {
+		t.Errorf("expected 2 entries (go+java), got %d", len(entries))
+	}
+}
+
+func TestWalk_IncludePattern(t *testing.T) {
+	dir := t.TempDir()
+
+	srcDir := filepath.Join(dir, "src")
+	if err := os.MkdirAll(filepath.Join(srcDir, "app"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	files := []string{
+		filepath.Join(srcDir, "app", "main.go"),
+		filepath.Join(dir, "outside.go"),
+		filepath.Join(srcDir, "other.go"),
+	}
+	for _, f := range files {
+		if err := os.WriteFile(f, []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	entries, errs := Walk(dir, Options{Include: []string{"src/**"}})
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	for _, e := range entries {
+		rel, err := filepath.Rel(dir, e.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rel != "src/app/main.go" && rel != "src/other.go" {
+			t.Errorf("include filter should exclude %s", rel)
+		}
+	}
+	if len(entries) != 2 {
+		t.Errorf("expected 2 entries, got %d", len(entries))
+	}
+}
+
+func TestWalk_IncludeBasenameGlob(t *testing.T) {
+	dir := t.TempDir()
+
+	files := []string{"main.java", "util.java", "app.go"}
+	for _, f := range files {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	entries, errs := Walk(dir, Options{Include: []string{"main.*"}})
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	if filepath.Base(entries[0].Path) != "main.java" {
+		t.Errorf("expected main.java, got %s", entries[0].Path)
+	}
+}
+
+func TestWalk_ExcludeBeatsInclude(t *testing.T) {
+	dir := t.TempDir()
+
+	files := []string{
+		filepath.Join(dir, "src", "keep.go"),
+		filepath.Join(dir, "src", "gen.g.dart"),
+	}
+	for _, f := range files {
+		if err := os.MkdirAll(filepath.Dir(f), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(f, []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	entries, errs := Walk(dir, Options{Include: []string{"src/**"}, Exclude: []string{"*.g.dart"}})
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	for _, e := range entries {
+		if filepath.Base(e.Path) == "gen.g.dart" {
+			t.Error("exclude should win over include")
+		}
+	}
+	if len(entries) != 1 {
+		t.Errorf("expected 1 entry, got %d", len(entries))
 	}
 }
 
@@ -152,7 +269,7 @@ func TestWalk_MaxFileSizeExcludes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	entries, errs := Walk(dir, "", 100, nil)
+	entries, errs := Walk(dir, Options{MaxFileSize: 100})
 	if len(errs) > 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
@@ -181,7 +298,7 @@ func TestWalk_SingleFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	entries, errs := Walk(path, "", 0, nil)
+	entries, errs := Walk(path, Options{})
 	if len(errs) > 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
@@ -200,7 +317,7 @@ func TestWalk_SingleFileUnsupportedExtension(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	entries, errs := Walk(path, "", 0, nil)
+	entries, errs := Walk(path, Options{})
 	if len(errs) > 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
@@ -209,8 +326,24 @@ func TestWalk_SingleFileUnsupportedExtension(t *testing.T) {
 	}
 }
 
+func TestWalk_SingleFileLangMismatch(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(path, []byte("package main"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, errs := Walk(path, Options{Langs: []string{"java"}})
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	if len(entries) != 0 {
+		t.Errorf("expected 0 entries for lang mismatch, got %d", len(entries))
+	}
+}
+
 func TestWalk_PathDoesNotExist(t *testing.T) {
-	_, errs := Walk("/nonexistent/path/that/does/not/exist", "", 0, nil)
+	_, errs := Walk("/nonexistent/path/that/does/not/exist", Options{})
 	if len(errs) == 0 {
 		t.Error("expected an error for non-existent path")
 	}
@@ -236,7 +369,7 @@ func TestWalk_NestedGitignore(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	entries, errs := Walk(dir, "", 0, nil)
+	entries, errs := Walk(dir, Options{})
 	if len(errs) > 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
@@ -267,7 +400,7 @@ func TestWalk_NestedGitignore(t *testing.T) {
 func TestWalk_EmptyDirectory(t *testing.T) {
 	dir := t.TempDir()
 
-	entries, errs := Walk(dir, "", 0, nil)
+	entries, errs := Walk(dir, Options{})
 	if len(errs) > 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
@@ -289,7 +422,7 @@ func TestWalk_ExcludesNodeModules(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	entries, errs := Walk(dir, "", 0, nil)
+	entries, errs := Walk(dir, Options{})
 	if len(errs) > 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
@@ -311,7 +444,7 @@ func TestWalk_ExcludeByBasenameGlob(t *testing.T) {
 		}
 	}
 
-	entries, errs := Walk(dir, "", 0, []string{"*.g.dart"})
+	entries, errs := Walk(dir, Options{Exclude: []string{"*.g.dart"}})
 	if len(errs) > 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
@@ -334,6 +467,39 @@ func TestWalk_ExcludeByBasenameGlob(t *testing.T) {
 	}
 }
 
+func TestWalk_ExcludeDirectoryGlob(t *testing.T) {
+	dir := t.TempDir()
+
+	vendorDir := filepath.Join(dir, "vendor", "pkg")
+	if err := os.MkdirAll(vendorDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	files := []string{
+		filepath.Join(vendorDir, "dep.go"),
+		filepath.Join(dir, "main.go"),
+	}
+	for _, f := range files {
+		if err := os.WriteFile(f, []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	entries, errs := Walk(dir, Options{Exclude: []string{"vendor/**"}})
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	for _, e := range entries {
+		if filepath.Base(e.Path) == "dep.go" {
+			t.Error("vendor/** should exclude vendor/pkg/dep.go")
+		}
+	}
+	if len(entries) != 1 {
+		t.Errorf("expected 1 entry, got %d", len(entries))
+	}
+}
+
 func TestWalk_ExcludeMultiplePatterns(t *testing.T) {
 	dir := t.TempDir()
 
@@ -344,7 +510,7 @@ func TestWalk_ExcludeMultiplePatterns(t *testing.T) {
 		}
 	}
 
-	entries, errs := Walk(dir, "", 0, []string{"*.g.dart", "*_test.go"})
+	entries, errs := Walk(dir, Options{Exclude: []string{"*.g.dart", "*_test.go"}})
 	if len(errs) > 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
@@ -370,7 +536,7 @@ func TestWalk_ExcludeNilPatternsIncludesAll(t *testing.T) {
 		}
 	}
 
-	entries, errs := Walk(dir, "", 0, nil)
+	entries, errs := Walk(dir, Options{})
 	if len(errs) > 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
@@ -380,7 +546,7 @@ func TestWalk_ExcludeNilPatternsIncludesAll(t *testing.T) {
 	}
 }
 
-func TestMatchesAny(t *testing.T) {
+func TestMatchAny(t *testing.T) {
 	tests := []struct {
 		name     string
 		path     string
@@ -394,12 +560,18 @@ func TestMatchesAny(t *testing.T) {
 		{"multiple patterns first matches", "/a/b/foo_test.go", []string{"*_test.go", "*.g.dart"}, true},
 		{"multiple patterns second matches", "/a/b/gen.g.dart", []string{"*_test.go", "*.g.dart"}, true},
 		{"multiple patterns none match", "/a/b/main.go", []string{"*_test.go", "*.g.dart"}, false},
+		{"directory glob", "vendor/pkg/dep.go", []string{"vendor/**"}, true},
+		{"directory glob no match", "src/pkg/dep.go", []string{"vendor/**"}, false},
+		{"doublestar nested", "a/b/c/deep.go", []string{"a/**/deep.go"}, true},
+		{"empty pattern ignored", "/a/b/main.go", []string{""}, false},
+		{"directory glob rel path", "vendor/pkg/dep.go", []string{"vendor/**"}, true},
+		{"rel path match", "src/app/main.go", []string{"src/**"}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := matchesAny(tt.path, tt.patterns)
+			got := matchAny(tt.patterns, tt.path, "")
 			if got != tt.want {
-				t.Errorf("matchesAny(%q, %v) = %v, want %v", tt.path, tt.patterns, got, tt.want)
+				t.Errorf("matchAny(%v, %q) = %v, want %v", tt.patterns, tt.path, got, tt.want)
 			}
 		})
 	}
